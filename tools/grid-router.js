@@ -180,8 +180,17 @@ globalThis.__pcbgolfRouteBatch = async function(tools, batchSize = 12) {
     return null
   }
   function routeNet(net){
+    // Some connector footprints model one physical contact as overlapping
+    // thru-hole + SMT pads with different pad names (e.g. J3.B6/B6T).
+    // Collapse pads landing on the same routing-grid terminal, preferring the
+    // through-hole instance since it is already conductive on both layers.
+    const grouped=new Map();
+    for(const p of net.pads){
+      const k=GX(p.x)+","+GY(p.y),prev=grouped.get(k);
+      if(!prev || (p.type.includes("thru")&&!prev.type.includes("thru")))grouped.set(k,p);
+    }
     const terms=[];
-    for(const p of net.pads){const t=terminal(p,net.idx);if(!t)return {ok:false,why:"no pad escape",pad:[p.ref,p.pin]};terms.push({...t,ref:p.ref,pin:p.pin})}
+    for(const p of grouped.values()){const t=terminal(p,net.idx);if(!t)return {ok:false,why:"no pad escape",pad:[p.ref,p.pin]};terms.push({...t,ref:p.ref,pin:p.pin})}
     // Reserve all terminal stubs after confirming they exist.
     for(const t of terms)if(t.stub){for(const [x,y] of t.stub.cells)reserveCell(0,I(x,y),net.idx);state.stubs.push({net:net.name,ref:t.ref,pin:t.pin,cells:t.stub.cells,exact:t.stub.exact,end:t.stub.end})}
     const connected=[terms[0]],todo=terms.slice(1),polys=[];
