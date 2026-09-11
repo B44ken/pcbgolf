@@ -242,3 +242,54 @@ globalThis.__pcbgolfRouteBatch = async function(tools, batchSize = 12) {
   else wr=await tools.mcp__GitHub__create_file({repository_full_name:repo,path:"tools/route-state.json",content,message:"initialize grid route",branch});
   return {grid:{nx,ny,cells:N,step},done:state.done.length,total:routable.length,remaining:routable.length-state.done.length,attempted,failed,routes:state.routes.length,stubs:state.stubs.length,commit:wr.result?.commit_sha};
 };
+
+
+globalThis.__pcbgolfRipupFailure = async function(tools, maxBlockers = 4, padMm = 4) {
+  const repo="B44ken/PCBGolf",branch="route-v0";
+  const [bf,sf]=await Promise.all([
+    tools.mcp__GitHub__fetch({url:"https://api.github.com/repos/B44ken/PCBGolf/git/blobs/5c8b2a9f38a7fd2cd5f8faeb8fc10a454d6d5b54"}),
+    tools.mcp__GitHub__fetch_file({repository_full_name:repo,path:"tools/route-state.json",ref:branch})
+  ]);
+  const board=bf.result.content,state=JSON.parse(sf.result.content);
+  if(!state.failed?.length)return {changed:false,reason:"no failure"};
+  const fail=state.failed[0],from=fail.from,to=fail.to;
+  if(!from||!to)return {changed:false,reason:"failure has no endpoints",fail};
+  function blocks(t,k){const o=[];let i=0,n="("+k;while((i=t.indexOf(n,i))>=0){if(!/\s/.test(t[i+n.length])){i+=n.length;continue}let d=0,q=false,e=false,j=i;for(;j<t.length;j++){let c=t[j];if(q){if(e)e=false;else if(c==="\\")e=true;else if(c==='"')q=false}else{if(c==='"')q=true;else if(c==="(")d++;else if(c===")"&&--d===0){j++;break}}}o.push(t.slice(i,j));i=j}return o}
+  const prop=(x,k)=>(x.match(new RegExp('\\(property\\s+"'+k+'"\\s+"([^"]*)"'))||[])[1]||"";
+  const at=x=>{const m=x.match(/\(at\s+(-?[\d.]+)\s+(-?[\d.]+)(?:\s+(-?[\d.]+))?/);return m?[+m[1],+m[2],+(m[3]||0)]:[0,0,0]};
+  const rot=(x,y,a)=>{const t=a*Math.PI/180,c=Math.cos(t),z=Math.sin(t);return[x*c-y*z,x*z+y*c]};
+  const wanted=new Set([from[0]+":"+from[1],to[0]+":"+to[1]]),pts={};
+  for(const fp of blocks(board,"footprint")){
+    const ref=prop(fp,"Reference"),fa=at(fp);
+    for(const p of blocks(fp,"pad")){
+      const m=p.match(/^\(pad\s+"([^"]*)"/);if(!m)continue;const k=ref+":"+m[1];if(!wanted.has(k))continue;
+      const pa=at(p),q=rot(pa[0],pa[1],fa[2]);pts[k]=[fa[0]+q[0],fa[1]+q[1]];
+    }
+  }
+  const a=pts[from[0]+":"+from[1]],b=pts[to[0]+":"+to[1]];
+  if(!a||!b)return {changed:false,reason:"failed endpoints not found",pts,fail};
+  const x0=Math.min(a[0],b[0])-padMm,x1=Math.max(a[0],b[0])+padMm,y0=Math.min(a[1],b[1])-padMm,y1=Math.max(a[1],b[1])+padMm;
+  const {step,ox,oy}=state.grid,counts={};
+  const add=(net,x,y)=>{if(net===fail.net)return;const xx=ox+x*step,yy=oy+y*step;if(xx>=x0&&xx<=x1&&yy>=y0&&yy<=y1)counts[net]=(counts[net]||0)+1};
+  for(const r of state.routes){
+    const p=r.poly;
+    for(let i=0;i<p.length-1;i++){
+      let[x,y,l]=p[i],[x2,y2,l2]=p[i+1];
+      if(l!==l2){add(r.net,x,y);continue}
+      const dx=Math.sign(x2-x),dy=Math.sign(y2-y);add(r.net,x,y);
+      while(x!==x2||y!==y2){x+=dx;y+=dy;add(r.net,x,y)}
+    }
+  }
+  for(const st of state.stubs)for(const[x,y]of st.cells)add(st.net,x,y);
+  const blockers=Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,maxBlockers).map(x=>x[0]);
+  if(!blockers.length)return {changed:false,reason:"no dynamic blockers in corridor",fail,box:[x0,y0,x1,y1]};
+  const remove=new Set(blockers);
+  state.done=state.done.filter(n=>!remove.has(n));
+  state.routes=state.routes.filter(r=>!remove.has(r.net)&&r.net!==fail.net);
+  state.stubs=state.stubs.filter(r=>!remove.has(r.net)&&r.net!==fail.net);
+  const oldPriority=state.priority||[];
+  state.priority=[fail.net,...blockers,...oldPriority].filter((n,i,a)=>a.indexOf(n)===i&&!state.done.includes(n));
+  state.failed=[];
+  const wr=await tools.mcp__GitHub__update_file({repository_full_name:repo,path:"tools/route-state.json",content:JSON.stringify(state),message:"auto rip-up blockers for "+fail.net,sha:sf.result.sha,branch});
+  return {changed:true,failedNet:fail.net,endpoints:{a,b},box:[x0,y0,x1,y1],blockerCounts:Object.entries(counts).sort((a,b)=>b[1]-a[1]).slice(0,maxBlockers),done:state.done.length,priority:state.priority,commit:wr.result?.commit_sha};
+};
