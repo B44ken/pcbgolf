@@ -59,12 +59,12 @@ globalThis.__pcbgolfRouteBatch = async function(tools, batchSize = 12) {
   if(!state) state={version:3,grid:{step,ox,oy,nx,ny},done:[],failed:[],routes:[],stubs:[]};
   if(state.grid.nx!==nx||state.grid.ny!==ny||state.grid.step!==step) throw new Error("route-state grid mismatch");
 
-  const stat=[new Int32Array(N),new Int32Array(N)]; stat[0].fill(-1);stat[1].fill(-1);
+  const stat=[0,1,2,3].map(()=>{const a=new Int32Array(N);a.fill(-1);return a});
   const mergeOwner=(a,b)=>a===-1?b:a===b?a:-2;
   for(const p of pads){
     const own=p.net&&netIndex.get(p.net)||-2, exp=.15;
     const xa=GX(p.x-p.w/2-exp), xb=GX(p.x+p.w/2+exp), ya=GY(p.y-p.h/2-exp), yb=GY(p.y+p.h/2+exp);
-    const lays=p.type.includes("thru")?[0,1]:p.layers.includes("B.Cu")?[1]:[0];
+    const lays=p.type.includes("thru")?[0,1,2,3]:p.layers.includes("B.Cu")?[1]:[0];
     for(const l of lays)for(let y=ya;y<=yb;y++)for(let x=xa;x<=xb;x++){const k=I(x,y);stat[l][k]=mergeOwner(stat[l][k],own)}
   }
   // Reserve a short outward F.Cu fanout corridor for every SMD pad before
@@ -88,12 +88,12 @@ globalThis.__pcbgolfRouteBatch = async function(tools, batchSize = 12) {
     if(ok)for(const [x,y] of cells)stat[0][I(x,y)]=own;
   }
 
-  const dyn=[new Int32Array(N),new Int32Array(N)];dyn[0].fill(-1);dyn[1].fill(-1);
+  const dyn=[0,1,2,3].map(()=>{const a=new Int32Array(N);a.fill(-1);return a});
   const blocked=(l,k,n)=>(stat[l][k]!==-1&&stat[l][k]!==n)||(dyn[l][k]!==-1&&dyn[l][k]!==n);
   function reserveCell(l,k,n){if(dyn[l][k]===-1||dyn[l][k]===n)dyn[l][k]=n;else throw new Error("dynamic route collision")}
   function canVia(k,n){
     const x=k%nx,y=(k/nx)|0;
-    for(const l of [0,1])for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
+    for(const l of [0,1,2,3])for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){
       const xx=x+dx,yy=y+dy;if(xx<0||xx>=nx||yy<0||yy>=ny)return false;
       const q=I(xx,yy);if(blocked(l,q,n))return false;
     }
@@ -101,7 +101,7 @@ globalThis.__pcbgolfRouteBatch = async function(tools, batchSize = 12) {
   }
   function reserveVia(k,n){
     const x=k%nx,y=(k/nx)|0;
-    for(const l of [0,1])for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)reserveCell(l,I(x+dx,y+dy),n);
+    for(const l of [0,1,2,3])for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++)reserveCell(l,I(x+dx,y+dy),n);
   }
   function expandPolyline(poly, cb){
     for(let i=0;i<poly.length-1;i++){
@@ -129,7 +129,7 @@ globalThis.__pcbgolfRouteBatch = async function(tools, batchSize = 12) {
     get length(){return this.a.length}
   }
   function astar(net,sx,sy,sl,tx,ty,tl){
-    const size=N*2, INF=1e30, g=new Float64Array(size), prev=new Int32Array(size), seen=new Uint8Array(size), heap=new Heap();
+    const size=N*4, INF=1e30, g=new Float64Array(size), prev=new Int32Array(size), seen=new Uint8Array(size), heap=new Heap();
     g.fill(INF);prev.fill(-1);
     const sid=sl*N+I(sx,sy),tid=tl*N+I(tx,ty);g[sid]=0;heap.push([Math.abs(sx-tx)+Math.abs(sy-ty),sid]);
     let found=-1,iter=0;
@@ -139,10 +139,10 @@ globalThis.__pcbgolfRouteBatch = async function(tools, batchSize = 12) {
       for(const [dx,dy] of [[1,0],[-1,0],[0,1],[0,-1]]){
         const xx=x+dx,yy=y+dy;if(xx<0||xx>=nx||yy<0||yy>=ny)continue;
         const kk=I(xx,yy);if(blocked(l,kk,net)&&kk!==I(tx,ty))continue;
-        const v=l*N+kk, orient=l===0?(dy?1.12:1):(dx?1.12:1),ng=g[u]+orient;
+        const v=l*N+kk, horiz=(l===0||l===2),orient=horiz?(dy?1.12:1):(dx?1.12:1),ng=g[u]+orient;
         if(ng<g[v]){g[v]=ng;prev[v]=u;heap.push([ng+Math.abs(xx-tx)+Math.abs(yy-ty),v])}
       }
-      if(canVia(k,net)){const ol=1-l,v=ol*N+k,ng=g[u]+7;if(ng<g[v]){g[v]=ng;prev[v]=u;heap.push([ng+Math.abs(x-tx)+Math.abs(y-ty),v])}}
+      if(canVia(k,net)){for(const ol of [0,1,2,3])if(ol!==l){const v=ol*N+k,ng=g[u]+7;if(ng<g[v]){g[v]=ng;prev[v]=u;heap.push([ng+Math.abs(x-tx)+Math.abs(y-ty),v])}}}
     }
     if(found<0)return null;
     const p=[];for(let u=found;u!==-1;u=prev[u]){const l=(u/N)|0,k=u%N;p.push([k%nx,(k/nx)|0,l])}return p.reverse()
@@ -161,8 +161,8 @@ globalThis.__pcbgolfRouteBatch = async function(tools, batchSize = 12) {
   function terminal(p,n){
     const cx=GX(p.x),cy=GY(p.y);
     if(p.type.includes("thru") || Math.min(p.w,p.h)>=.75){
-      if(p.type.includes("thru"))return {x:cx,y:cy,layers:[0,1],stub:null,exact:[p.x,p.y]};
-      if(canVia(I(cx,cy),n))return {x:cx,y:cy,layers:[0,1],stub:null,exact:[p.x,p.y],viaInPad:true};
+      if(p.type.includes("thru"))return {x:cx,y:cy,layers:[0,1,2,3],stub:null,exact:[p.x,p.y]};
+      if(canVia(I(cx,cy),n))return {x:cx,y:cy,layers:[0,1,2,3],stub:null,exact:[p.x,p.y],viaInPad:true};
     }
     let dx=p.x-p.fcx,dy=p.y-p.fcy;
     const dirs=[];
