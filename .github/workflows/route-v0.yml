@@ -1,0 +1,131 @@
+name: route-v0
+
+on:
+  push:
+    branches: [route-v0]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  route:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install KiCad 10 and router dependencies
+        run: |
+          sudo add-apt-repository --yes ppa:kicad/kicad-10.0-releases
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends kicad openjdk-21-jre-headless jq
+          kicad-cli version
+          java -version
+
+      - name: Export the five schematic pages to XML netlists
+        run: |
+          mkdir -p build
+          for sch in pcbgolf.kicad_sch pcbgolf_2.kicad_sch pcbgolf_3.kicad_sch pcbgolf_4.kicad_sch pcbgolf_5.kicad_sch; do
+            stem="\${sch%.kicad_sch}"
+            kicad-cli sch export netlist --format kicadxml -o "build/\${stem}.xml" "\$sch"
+          done
+
+      - name: Build routed-board input and Specctra DSN
+        run: |
+          /usr/bin/python3 tools/route_board.py prepare
+
+      - name: Download current Freerouting release
+        run: |
+          url="\$(
+            curl -fsSL https://api.github.com/repos/freerouting/freerouting/releases/latest |
+            jq -r '.assets[] | select(.name | endswith(".jar")) | .browser_download_url' |
+            head -n1
+          )"
+          test -n "\$url" && test "\$url" != "null"
+          echo "router: \$url"
+          curl -fL "\$url" -o build/freerouting.jar
+          test -s build/freerouting.jar
+
+      - name: Autoroute
+        run: |
+          java -Xmx6g -jar build/freerouting.jar \
+            -de build/pcbgolf.dsn \
+            -do build/pcbgolf.ses \
+            -mp 120 \
+            -mt 4
+          test -s build/pcbgolf.ses
+
+      - name: Import routed session
+        run: |
+          /usr/bin/python3 tools/route_board.py import
+
+      - name: KiCad DRC and board statistics
+        run: |
+          kicad-cli pcb drc \
+            --format json \
+            --all-track-errors \
+            --severity-all \
+            -o build/drc.json \
+            build/pcbgolf-routed.kicad_pcb || true
+          kicad-cli pcb export stats \
+            --format json \
+            --units mm \
+            -o build/stats.json \
+            build/pcbgolf-routed.kicad_pcb
+          cat build/route-summary.json
+          cat build/stats.json
+
+      - name: Export assembly STEP and visual checks
+        run: |
+          kicad-cli pcb export step \
+            --force \
+            --subst-models \
+            -o build/pcbgolf.step \
+            build/pcbgolf-routed.kicad_pcb
+          kicad-cli pcb render \
+            -o build/top.png \
+            --width 1800 --height 1400 \
+            --side top --quality high \
+            build/pcbgolf-routed.kicad_pcb
+          kicad-cli pcb render \
+            -o build/bottom.png \
+            --width 1800 --height 1400 \
+            --side bottom --quality high \
+            build/pcbgolf-routed.kicad_pcb
+          kicad-cli pcb render \
+            -o build/iso.png \
+            --width 1800 --height 1400 \
+            --quality high --perspective \
+            --rotate=-45,0,45 \
+            build/pcbgolf-routed.kicad_pcb
+
+      - name: Stage generated submission
+        run: |
+          mkdir -p submission
+          cp build/pcbgolf-routed.kicad_pcb submission/pcbgolf.kicad_pcb
+          cp build/pcbgolf.step submission/pcbgolf.step
+          cp build/route-summary.json submission/route-summary.json
+          cp build/drc.json submission/drc.json
+          cp build/stats.json submission/stats.json
+          cp build/top.png submission/top.png
+          cp build/bottom.png submission/bottom.png
+          cp build/iso.png submission/iso.png
+
+      - name: Upload debug/build outputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pcbgolf-route-v0
+          path: build/
+          if-no-files-found: warn
+
+      - name: Commit successful generated submission
+        run: |
+          git config user.name "pcbgolf-router"
+          git config user.email "pcbgolf-router@users.noreply.github.com"
+          git add submission
+          git commit -m "route v0: generated board [skip ci]" || exit 0
+          git push origin HEAD:route-v0
