@@ -46,7 +46,7 @@ globalThis.__pcbgolfRouteBatch = async function(tools, batchSize = 12) {
   try {
     stateFile=await tools.mcp__GitHub__fetch_file({repository_full_name:repo,path:"tools/route-state.json",ref:branch});
     state=JSON.parse(stateFile.result.content);
-    if(!state || state.version!==2) state=null;
+    if(!state || state.version!==3) state=null;
   } catch(e) {}
   const step=.2, margin=8;
   let xmin=Math.min(...pads.map(p=>p.x-p.w/2)),xmax=Math.max(...pads.map(p=>p.x+p.w/2)),
@@ -56,7 +56,7 @@ globalThis.__pcbgolfRouteBatch = async function(tools, batchSize = 12) {
   const I=(x,y)=>y*nx+x, clamp=(v,a,b)=>Math.max(a,Math.min(b,v)),
         GX=x=>clamp(Math.round((x-ox)/step),0,nx-1), GY=y=>clamp(Math.round((y-oy)/step),0,ny-1);
 
-  if(!state) state={version:2,grid:{step,ox,oy,nx,ny},done:[],failed:[],routes:[],stubs:[]};
+  if(!state) state={version:3,grid:{step,ox,oy,nx,ny},done:[],failed:[],routes:[],stubs:[]};
   if(state.grid.nx!==nx||state.grid.ny!==ny||state.grid.step!==step) throw new Error("route-state grid mismatch");
 
   const stat=[new Int32Array(N),new Int32Array(N)]; stat[0].fill(-1);stat[1].fill(-1);
@@ -67,6 +67,27 @@ globalThis.__pcbgolfRouteBatch = async function(tools, batchSize = 12) {
     const lays=p.type.includes("thru")?[0,1]:p.layers.includes("B.Cu")?[1]:[0];
     for(const l of lays)for(let y=ya;y<=yb;y++)for(let x=xa;x<=xb;x++){const k=I(x,y);stat[l][k]=mergeOwner(stat[l][k],own)}
   }
+  // Reserve a short outward F.Cu fanout corridor for every SMD pad before
+  // routing anything. This prevents an earlier net from sealing off a dense
+  // 0.5 mm-pitch QFP/QFN/USB-C pad that has only one practical escape direction.
+  function gridLine(x0,y0,x1,y1){
+    const out=[];let dx=Math.abs(x1-x0),sx=x0<x1?1:-1,dy=-Math.abs(y1-y0),sy=y0<y1?1:-1,err=dx+dy,x=x0,y=y0;
+    while(1){out.push([x,y]);if(x===x1&&y===y1)break;const e2=2*err;if(e2>=dy){err+=dy;x+=sx}if(e2<=dx){err+=dx;y+=sy}}
+    return out
+  }
+  for(const p of pads){
+    if(p.type.includes("thru")||!p.net||!netIndex.get(p.net))continue;
+    const own=netIndex.get(p.net),cx=GX(p.x),cy=GY(p.y);
+    let dx=p.x-p.fcx,dy=p.y-p.fcy,ux=0,uy=0;
+    if(Math.abs(dx)>=Math.abs(dy))ux=Math.sign(dx)||1;else uy=Math.sign(dy)||1;
+    const ex=GX(p.x+ux*(Math.abs(ux)*p.w/2+Math.abs(uy)*p.h/2+.75));
+    const ey=GY(p.y+uy*(Math.abs(ux)*p.w/2+Math.abs(uy)*p.h/2+.75));
+    const cells=gridLine(cx,cy,ex,ey);
+    let ok=true;
+    for(const [x,y] of cells){if(x<0||x>=nx||y<0||y>=ny){ok=false;break}const a=stat[0][I(x,y)];if(a!==-1&&a!==own){ok=false;break}}
+    if(ok)for(const [x,y] of cells)stat[0][I(x,y)]=own;
+  }
+
   const dyn=[new Int32Array(N),new Int32Array(N)];dyn[0].fill(-1);dyn[1].fill(-1);
   const blocked=(l,k,n)=>(stat[l][k]!==-1&&stat[l][k]!==n)||(dyn[l][k]!==-1&&dyn[l][k]!==n);
   function reserveCell(l,k,n){if(dyn[l][k]===-1||dyn[l][k]===n)dyn[l][k]=n;else throw new Error("dynamic route collision")}
