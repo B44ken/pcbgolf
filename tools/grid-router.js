@@ -214,12 +214,27 @@ globalThis.__pcbgolfRouteBatch = async function(tools, batchSize = 12) {
     return (a.pads.length-b.pads.length)||bboxScore(a)-bboxScore(b)
   }).filter(n=>!doneSet.has(n.name));
 
+  const priority=(state.priority||[]).filter(n=>!doneSet.has(n));
+  if(priority.length){
+    const rank=new Map(priority.map((n,i)=>[n,i]));
+    order.sort((a,b)=>(rank.has(a.name)?rank.get(a.name):-1)-(rank.has(b.name)?rank.get(b.name):-1));
+    // The comparator above puts non-priority first; explicitly rebuild.
+    const byName=new Map(order.map(n=>[n.name,n]));
+    const forced=priority.map(n=>byName.get(n)).filter(Boolean);
+    const forcedSet=new Set(forced.map(n=>n.name));
+    order.splice(0,order.length,...forced,...order.filter(n=>!forcedSet.has(n.name)));
+  }
   const attempted=[],failed=[];
   for(const net of order.slice(0,batchSize)){
+    const rs=state.routes.length, ss=state.stubs.length;
     const r=routeNet(net);attempted.push({net:net.name,pads:net.pads.length,result:r});
-    if(!r.ok){failed.push({net:net.name,...r});break}
+    if(!r.ok){
+      state.routes.length=rs; state.stubs.length=ss;
+      failed.push({net:net.name,...r});break
+    }
     state.done.push(net.name);
   }
+  if(state.priority) state.priority=state.priority.filter(n=>!state.done.includes(n));
   state.failed=failed;
   const content=JSON.stringify(state);
   let wr;
