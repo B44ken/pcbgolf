@@ -1,0 +1,1 @@
+{"version":1,"grid":{"step":0.3,"ox":110.39999999999999,"oy":47.1,"nx":277,"ny":268},"done":[],"failed":[{"name":"CH1_PWR_EN","detail":[{"x":36,"y":212,"ref":"U13","pin":"14"},{"x":32,"y":199,"ref":"U3","pin":"37"}]}],"routes":[]}
